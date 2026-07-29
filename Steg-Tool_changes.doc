@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>Steg-Tool: Suggested Improvements & Implementation Plan</title>
+<style>
+body { font-family: Arial, sans-serif; line-height: 1.4; padding: 28px; color: #111; }
+h1 { font-size: 20pt; }
+h2 { font-size: 14pt; margin-top: 18px; }
+code { background:#f4f4f4; padding:2px 4px; border-radius:4px; font-family: Consolas,monospace; }
+pre { background:#f8f8f8; padding:10px; border-radius:6px; overflow:auto; }
+.section { margin-bottom: 14px; }
+ul { margin-top:0 }
+</style>
+</head>
+<body>
+<h1>Steg-Tool: Suggested Improvements and Implementation Plan</h1>
+<p><strong>Generated:</strong> 2026-07-29</p>
+
+<div class="section">
+<h2>Program highlights (what this program does)</h2>
+<ul>
+<li>Steg-Tool is a Tkinter GUI for hiding and extracting payloads in images using AES-256-GCM and scrypt KDF.</li>
+<li>Embedding uses LSB matching with a scatter permutation and a wire format labeled <code>&lt;|STEGv4|&gt;</code>.</li>
+<li>Main components: GUI (Tkinter/TkinterDnD), image handling (Pillow), stego logic (numpy), crypto (pycryptodome scrypt & AES-GCM).</li>
+</ul>
+</div>
+
+<div class="section">
+<h2>High-level change summary (prioritized)</h2>
+<ol>
+<li>Fix drag-and-drop path parsing to be cross-platform and robust.</li>
+<li>Make DPI-awareness handling safer (avoid referencing undefined variables).</li>
+<li>Use context managers for <code>Image.open</code> across the codebase to avoid leaked file handles.</li>
+<li>Add structured logging and narrow broad <code>except</code> handlers (log tracebacks, keep friendly UI messages).</li>
+<li>Make scrypt KDF parameters configurable via environment variables (and optionally UI).</li>
+<li>Refactor core cryptographic & stego functionality into <code>steg_core.py</code> for testability and separation of concerns.</li>
+<li>Add a minimal CLI for headless hide/extract flows.</li>
+<li>Add unit tests (pytest) for core functionality using small images and reduced scrypt costs in CI/tests.</li>
+<li>Add <code>requirements.txt</code> (or <code>pyproject.toml</code>) and CI workflow for tests.</li>
+<li>UX improvements: warn about weak passwords, show confirmations, and maintain non-blocking UI flows.</li>
+</ol>
+</div>
+
+<div class="section">
+<h2>Branch & commit plan</h2>
+<ul>
+<li><strong>Branch name:</strong> <code>feat/refactor-hardening-stegtool</code></li>
+<li><strong>Suggested commits:</strong>
+<ul>
+<li>feat(core): extract Stego/KDF/AESGCM/pack/unpack to <code>steg_core.py</code></li>
+<li>fix(gui): robust drag &amp; drop path parsing and safer DPI handling</li>
+<li>fix(io): use context managers for <code>Image.open</code>; add logging</li>
+<li>feat(config): make scrypt params configurable via env vars</li>
+<li>feat(cli & tests): add CLI entrypoint and unit tests</li>
+<li>chore: add <code>requirements.txt</code> and CI workflow</li>
+</ul>
+</li>
+<li><strong>PR title suggestion:</strong> Refactor core logic, harden file handling &amp; DnD, add logging, KDF config, CLI &amp; tests</li>
+</ul>
+</div>
+
+<div class="section">
+<h2>Concrete file changes</h2>
+<p>Below are the files to create/modify and the rationale.</p>
+
+<h3>Create: <code>steg_core.py</code></h3>
+<p>Move core logic (KDF, AESGCM, packing, LSB helper, Stego class) into a testable module. Keep public API compatible with existing calls from the GUI so integration is minimal.</p>
+
+<pre><code># steg_core.py  (skeleton)
+"""
+Core steganography primitives for Steg-Tool
+"""
+
+from Crypto.Cipher import AES
+from Crypto.Protocol.KDF import scrypt as _scrypt
+import os, struct
+import numpy as np
+
+DELIM = b'<|STEGv4|>'
+PLAIN_HDR = b'\xCE\xFB\x04\x01'
+SALT_BITS = 256
+
+class KDF:
+    SALT_LEN = 32
+    _N = int(os.getenv('STEG_SCRYPT_N', 2**17))
+    _r = int(os.getenv('STEG_SCRYPT_r', 8))
+    _p = int(os.getenv('STEG_SCRYPT_p', 1))
+
+    @classmethod
+    def derive(cls, pw: str, salt: bytes):
+        km = _scrypt(pw.encode(), salt, key_len=64, N=cls._N, r=cls._r, p=cls._p)
+        return km[:32], int.from_bytes(km[32:40], 'big')
+
+# ... AESGCM, pack_text, pack_file, unpack, _lsb_match, Stego class ...
+</code></pre>
+
+<h3>Modify: <code>stegtool.py</code> (GUI)</h3>
+<ul>
+<li>Import from <code>steg_core</code> instead of having the Stego class inline.</li>
+<li>Replace the DPI try/except block with a safer variant that doesn't reference <code>windll</code> outside the import scope.</li>
+<li>Replace <code>_parse_dnd</code> to use <code>os.path.normpath</code> and handle braces &amp; spaces reliably.</li>
+<li>Wrap all <code>Image.open</code> calls with context managers: <code>with Image.open(path) as img:</code></li>
+<li>Use <code>logging</code> and <code>logger.exception</code> in broad excepts to retain tracebacks.</li>
+</ul>
+
+<pre><code># DPI block replacement
+try:
+    from ctypes import windll
+    try:
+        if hasattr(windll, 'shcore'):
+            windll.shcore.SetProcessDpiAwareness(2)
+        elif hasattr(windll, 'user32'):
+            windll.user32.SetProcessDPIAware()
+    except Exception:
+        pass
+except Exception:
+    pass
+
+# _parse_dnd replacement
+@staticmethod
+def _parse_dnd(data):
+    raw = (data or '').strip()
+    if raw.startswith('{') and '}' in raw:
+        p = raw[1:raw.find('}')]
+    else:
+        p = raw.split()[0]
+    p = p.strip('"').strip("'")
+    return os.path.normpath(p)
+</code></pre>
+
+</div>
+
+<div class="section">
+<h2>Logging & error handling</h2>
+<p>Add logging at top of modules and replace broad catches where possible:</p>
+
+<pre><code>import logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Example inside an except:
+except Exception as e:
+    logger.exception('Embedding failed')
+    return False, f'Embedding failed: {e}'
+</code></pre>
+</div>
+
+<div class="section">
+<h2>KDF configurability</h2>
+<p>Read scrypt parameters from environment variables to allow testing or tuning on low-end devices while keeping secure defaults.</p>
+<pre><code>class KDF:
+    SALT_LEN = 32
+    _N = int(os.getenv('STEG_SCRYPT_N', 2**17))
+    _r = int(os.getenv('STEG_SCRYPT_r', 8))
+    _p = int(os.getenv('STEG_SCRYPT_p', 1))
+</code></pre>
+<p>Document the tradeoff in README: lowering <code>_N</code> reduces cost but weakens resistance to brute force.</p>
+</div>
+
+<div class="section">
+<h2>CLI</h2>
+<p>Add a small CLI module <code>cli.py</code> exposing subcommands: <code>hide</code>, <code>hide-plain</code>, and <code>extract</code>. Use <code>argparse</code> and call into <code>steg_core.Stego</code>.</p>
+
+<pre><code># example usage
+python -m stegtool.cli hide --image cover.png --in secret.txt --out stego.png --pw password
+python -m stegtool.cli extract --image stego.png --out extracted.bin --pw password
+</code></pre>
+</div>
+
+<div class="section">
+<h2>Tests</h2>
+<p>Create <code>tests/test_steg_core.py</code>: generate a tiny in-memory image, hide/extract both plain and encrypted payloads and assert roundtrip equality. Set environment variables at test start to reduce scrypt cost for CI:</p>
+
+<pre><code>import os
+os.environ['STEG_SCRYPT_N'] = str(2**12)
+os.environ['STEG_SCRYPT_r'] = '8'
+os.environ['STEG_SCRYPT_p'] = '1'
+
+# tests: test_hide_extract_text_encrypted, test_hide_extract_text_plain, test_hide_extract_file_encrypted
+</code></pre>
+</div>
+
+<div class="section">
+<h2>CI</h2>
+<p>Add <code>.github/workflows/ci.yml</code> to run tests. Ensure the test runner sets lower scrypt params for speed in CI.</p>
+
+<pre><code>name: CI
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v4
+        with: python-version: '3.11'
+      - run: python -m pip install -r requirements.txt
+      - run: |
+          export STEG_SCRYPT_N=$((2**12))
+          pytest -q
+</code></pre>
+</div>
+
+<div class="section">
+<h2>Requirements</h2>
+<p>Create <code>requirements.txt</code> with minimal pinned libraries:</p>
+<pre><code>Pillow>=9.0
+numpy>=1.22
+pycryptodome>=3.10
+tkinterdnd2>=0.0.7
+pytest>=7.0
+</code></pre>
+</div>
+
+<div class="section">
+<h2>Password & UX improvements</h2>
+<ul>
+<li>Warn or require a minimal password strength (use existing <code>pw_strength</code> helper).</li>
+<li>Disable/grey-out the "Hide" button until the password meets a threshold or confirmation is accepted.</li>
+<li>Prompt the user when password is weak: <code>messagebox.askyesno</code>.</li>
+</ul>
+</div>
+
+<div class="section">
+<h2>Acceptance criteria</h2>
+<ul>
+<li>Code builds and GUI runs manually.</li>
+<li>Image file handles are not leaked (all opens use context managers).</li>
+<li>Drag &amp; drop works for typical paths (Windows and POSIX) including paths with spaces.</li>
+<li>Unit tests pass in CI (with lowered scrypt parameters).</li>
+<li>Logging captures exceptions with tracebacks while UI shows friendly messages.</li>
+</ul>
+</div>
+
+<div class="section">
+<h2>PR description (suggestion)</h2>
+<p>This PR extracts core steganography logic into <code>steg_core.py</code>, hardens file handling and DnD parsing, improves DPI handling on Windows, adds logging and configurable scrypt KDF parameters, and provides a CLI and unit tests. No wire-format change: still <code>&lt;|STEGv4|&gt;</code>. See commits for details.</p>
+</div>
+
+<div class="section">
+<h2>Notes & next steps I can take</h2>
+<ul>
+<li>Generate a patch/PR with the critical fixes only (DND parsing, DPI block, Image.open context managers, and logging) for quick review.</li>
+<li>Generate a full PR including <code>steg_core.py</code>, CLI, tests, and CI — larger but more complete.</li>
+</ul>
+
+<p>If you want, I will add this document to the repository as a Word-compatible file so you can download it directly. I have added this file to the repository at <code>Steg-Tool_changes.doc</code> in the default branch.</p>
+
+</body>
+</html>
