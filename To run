@@ -1,0 +1,8 @@
+Instal- pip install -r requirements.txt
+
+
+For compling: pip install pyinstaller
+python -m PyInstaller --clean Stegtool_v2.spec
+
+
+To run: python stegtool.py
