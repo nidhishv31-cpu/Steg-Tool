@@ -11,41 +11,48 @@ Features:
   • 8 Premium Minimalist Presets (Obsidian, Nord Ice, Forest Edge, Deep Steel, 
     Rose Quartz, Slate Light, Cyberpunk Neon, Sepia Warmth)
   • Font size & family configuration dropdowns in the modal
+  • Safe context-managed file handling
+  • Robust cross-platform drag-and-drop parsing
+  • Integrated standard logging (capturing tracebacks)
 """
 
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, scrolledtext
 from tkinterdnd2 import DND_FILES, TkinterDnD
 from PIL import Image, ImageTk
-from Crypto.Cipher import AES
-from Crypto.Protocol.KDF import scrypt as _scrypt
-import os, struct, math, threading, re
+import os, struct, threading, logging, re
 import numpy as np
+
+# Import core functionalities
+import steg_core as core
+
+# Initialize GUI logger
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] (GUI) %(message)s")
+logger = logging.getLogger(__name__)
 
 # ══════════════════════════════════════════════════════════════
 # HIGH-DPI SCALING ENHANCEMENT
 # ══════════════════════════════════════════════════════════════
 try:
     from ctypes import windll
-    windll.shcore.SetProcessDpiAwareness(2) # Per-monitor DPI aware (Windows 8.1+)
-except Exception:
     try:
-        windll.user32.SetProcessDPIAware() # Fallback for older systems
-    except Exception:
-        pass # Non-Windows OS fallback
+        if hasattr(windll, 'shcore'):
+            windll.shcore.SetProcessDpiAwareness(2) # Per-monitor DPI aware (Windows 8.1+)
+        elif hasattr(windll, 'user32'):
+            windll.user32.SetProcessDPIAware() # Fallback for older systems
+    except Exception as e:
+        logger.debug(f"Failed setting DPI awareness parameters: {e}")
+except Exception as e:
+    logger.debug(f"Could not import ctypes windll: {e}")
 
 # ══════════════════════════════════════════════════════════════
-# CONSTANTS
+# CONSTANTS & CUSTOMIZATION SETUP
 # ══════════════════════════════════════════════════════════════
-APP_VER   = '2.0'
-DELIM     = b'<|STEGv4|>'           # version-tagged delimiter
-SALT_BITS = 256                     # first 256 channels = 32-byte KDF salt (sequential)
-PLAIN_HDR = b'\xCE\xFB\x04\x01'    # 4-byte magic for unencrypted mode
+APP_VER = '5.0'
+SP = {1:4, 2:8, 3:12, 4:16, 5:20, 6:24, 8:32}
 
-# ══════════════════════════════════════════════════════════════
-# 8 PREMIUM MINIMALIST COLOR PRESETS
-# ══════════════════════════════════════════════════════════════
-PALETTES = {
+# Color palettes
+PALETTES = core.PALETTES if hasattr(core, 'PALETTES') else {
     "Obsidian (Dark)": {
         'bg': '#0a0a0f', 'bg_card': '#12121e', 'bg_input': '#181829',
         'bg_hover': '#222238', 'bg_press': '#1c1c2e', 'sidebar': '#0f0f18',
@@ -55,83 +62,10 @@ PALETTES = {
         'danger': '#f87171', 'warning': '#fbbf24', 'success': '#34d399',
         'text': '#f1f5f9', 'text_muted': '#64748b', 'text_dim': '#94a3b8',
         's1': '#f87171', 's2': '#fb923c', 's3': '#fbbf24', 's4': '#34d399', 's5': '#22d3ee',
-    },
-    "Nord Ice (Dark)": {
-        'bg': '#0f1722', 'bg_card': '#1a2333', 'bg_input': '#222d3f',
-        'bg_hover': '#2c3b53', 'bg_press': '#243247', 'sidebar': '#141d2a',
-        'border': '#33445c', 'border_hi': '#88c0d0',
-        'accent': '#88c0d0', 'accent_dk': '#5e81ac',
-        'secondary': '#8fbcbb', 'sec_dk': '#4c566a',
-        'danger': '#bf616a', 'warning': '#ebcb8b', 'success': '#a3be8c',
-        'text': '#eceff4', 'text_muted': '#6a7890', 'text_dim': '#d8dee9',
-        's1': '#bf616a', 's2': '#d08770', 's3': '#ebcb8b', 's4': '#a3be8c', 's5': '#b48ead',
-    },
-    "Forest Edge (Dark)": {
-        'bg': '#090d0b', 'bg_card': '#111814', 'bg_input': '#17221d',
-        'bg_hover': '#23322b', 'bg_press': '#1c2822', 'sidebar': '#0d120f',
-        'border': '#283a31', 'border_hi': '#52b788',
-        'accent': '#74c69d', 'accent_dk': '#52b788',
-        'secondary': '#95d5b2', 'sec_dk': '#40916c',
-        'danger': '#ff8787', 'warning': '#ffd166', 'success': '#52b788',
-        'text': '#edf7f4', 'text_muted': '#5c786c', 'text_dim': '#b7e4c7',
-        's1': '#ff8787', 's2': '#f4a261', 's3': '#ffd166', 's4': '#52b788', 's5': '#95d5b2',
-    },
-    "Deep Steel (Dark)": {
-        'bg': '#12161a', 'bg_card': '#1b2026', 'bg_input': '#242b33',
-        'bg_hover': '#323c47', 'bg_press': '#2b333d', 'sidebar': '#171c21',
-        'border': '#394452', 'border_hi': '#00bcd4',
-        'accent': '#00bcd4', 'accent_dk': '#0097a7',
-        'secondary': '#80deea', 'sec_dk': '#00838f',
-        'danger': '#ff5252', 'warning': '#ffd740', 'success': '#69f0ae',
-        'text': '#e0e6ed', 'text_muted': '#78909c', 'text_dim': '#b0bec5',
-        's1': '#ff5252', 's2': '#ffab40', 's3': '#ffd740', 's4': '#69f0ae', 's5': '#80deea',
-    },
-    "Cyberpunk Neon (Dark)": {
-        'bg': '#030008', 'bg_card': '#0d021a', 'bg_input': '#16042b',
-        'bg_hover': '#250847', 'bg_press': '#1a0633', 'sidebar': '#080112',
-        'border': '#3d0c75', 'border_hi': '#ff007f',
-        'accent': '#ff007f', 'accent_dk': '#bc005e',
-        'secondary': '#39ff14', 'sec_dk': '#20cc0a',
-        'danger': '#ff0055', 'warning': '#ffff00', 'success': '#39ff14',
-        'text': '#f5f0ff', 'text_muted': '#80689e', 'text_dim': '#ccb3e6',
-        's1': '#ff0055', 's2': '#ff5500', 's3': '#ffff00', 's4': '#39ff14', 's5': '#00ffff',
-    },
-    "Rose Quartz (Light)": {
-        'bg': '#f7f3f5', 'bg_card': '#ffffff', 'bg_input': '#f3ebee',
-        'bg_hover': '#ebdbe2', 'bg_press': '#dfcbd4', 'sidebar': '#faf6f8',
-        'border': '#d8cbd2', 'border_hi': '#d63384',
-        'accent': '#d63384', 'accent_dk': '#b11e68',
-        'secondary': '#6c757d', 'sec_dk': '#495057',
-        'danger': '#dc3545', 'warning': '#ffc107', 'success': '#198754',
-        'text': '#2b1b22', 'text_muted': '#8a747e', 'text_dim': '#5e4e56',
-        's1': '#dc3545', 's2': '#fd7e14', 's3': '#ffc107', 's4': '#198754', 's5': '#20c997',
-    },
-    "Slate Light (Light)": {
-        'bg': '#f1f5f9', 'bg_card': '#ffffff', 'bg_input': '#f8fafc',
-        'bg_hover': '#e2e8f0', 'bg_press': '#cbd5e1', 'sidebar': '#f8fafc',
-        'border': '#cbd5e1', 'border_hi': '#0f172a',
-        'accent': '#0f172a', 'accent_dk': '#334155',
-        'secondary': '#475569', 'sec_dk': '#64748b',
-        'danger': '#ef4444', 'warning': '#f59e0b', 'success': '#10b981',
-        'text': '#0f172a', 'text_muted': '#64748b', 'text_dim': '#334155',
-        's1': '#ef4444', 's2': '#f97316', 's3': '#f59e0b', 's4': '#10b981', 's5': '#475569',
-    },
-    "Sepia Warmth (Light)": {
-        'bg': '#f4efe6', 'bg_card': '#faf8f5', 'bg_input': '#ebe4d5',
-        'bg_hover': '#dfd6c4', 'bg_press': '#cfc2ad', 'sidebar': '#f0eae0',
-        'border': '#d3c7b1', 'border_hi': '#8c6239',
-        'accent': '#8c6239', 'accent_dk': '#5c3f21',
-        'secondary': '#7f8c8d', 'sec_dk': '#5d6d7e',
-        'danger': '#c0392b', 'warning': '#f39c12', 'success': '#27ae60',
-        'text': '#332a21', 'text_muted': '#8a7f72', 'text_dim': '#5e544a',
-        's1': '#c0392b', 's2': '#d35400', 's3': '#f39c12', 's4': '#27ae60', 's5': '#2980b9',
     }
 }
-
-# Mutable state values loaded from Obsidian theme by default
-C = dict(PALETTES["Obsidian (Dark)"])
-
-SP = {1:4, 2:8, 3:12, 4:16, 5:20, 6:24, 8:32}
+# Default theme initialization
+C = dict(PALETTES.get("Obsidian (Dark)", list(PALETTES.values())[0]))
 
 F_FAMILY = "Segoe UI"
 F_SIZE_OFFSET = 0
@@ -151,9 +85,6 @@ def get_font(key, bold=False):
     res_size = max(6, size + F_SIZE_OFFSET)
     return (font_name, res_size, 'bold') if (bold or key in ('display', 'title', 'label')) else (font_name, res_size)
 
-# ══════════════════════════════════════════════════════════════
-# CRYPTO & UTILS (SCRYPT KDF / AES-GCM)
-# ══════════════════════════════════════════════════════════════
 def pw_strength(pw):
     if not pw: return 0, '', 'border'
     s  = (len(pw)>=8) + (len(pw)>=12)
@@ -163,184 +94,8 @@ def pw_strength(pw):
     return s, ['','Weak','Fair','Good','Strong','Very Strong'][s], \
               ['border','s1','s2','s3','s4','s5'][s]
 
-class KDF:
-    SALT_LEN = 32
-    _N, _r, _p = 2**17, 8, 1
-    @classmethod
-    def derive(cls, pw: str, salt: bytes):
-        km = _scrypt(pw.encode(), salt, key_len=64, N=cls._N, r=cls._r, p=cls._p)
-        return km[:32], int.from_bytes(km[32:40], 'big')
-
-class AESGCM:
-    NONCE, TAG = 12, 16
-    @classmethod
-    def encrypt(cls, plain, key):
-        nonce = os.urandom(cls.NONCE)
-        ct, tag = AES.new(key, AES.MODE_GCM, nonce=nonce).encrypt_and_digest(plain)
-        return nonce + tag + ct
-    @classmethod
-    def decrypt(cls, data, key):
-        if len(data) < cls.NONCE + cls.TAG: raise ValueError('Blob too short')
-        n, t = cls.NONCE, cls.TAG
-        return AES.new(key, AES.MODE_GCM, nonce=data[:n]).decrypt_and_verify(data[n+t:], data[n:n+t])
-
-_MT = b'\x01';  _MF = b'\x02'
-def pack_text(text): return _MT + text.encode('utf-8')
-def pack_file(path, data):
-    fn = os.path.basename(path).encode('utf-8')
-    return _MF + struct.pack('>H', len(fn)) + fn + data
-def unpack(plain):
-    if not plain: raise ValueError('Empty payload')
-    m, r = plain[:1], plain[1:]
-    if m == _MT: return 'text', r.decode('utf-8')
-    if m == _MF:
-        fl = struct.unpack('>H', r[:2])[0]
-        return 'file', (r[2:2+fl].decode('utf-8'), r[2+fl:])
-    raise ValueError(f'Unknown mode byte {m!r}')
-
-def _lsb_match(arr: np.ndarray, indices: np.ndarray, bits: np.ndarray, seed: int):
-    vals = arr[indices].astype(np.int32)
-    miss = (vals & 1) != bits.astype(np.int32)
-    if not np.any(miss): return
-    rng  = np.random.default_rng(seed)
-    n    = int(miss.sum())
-    d    = np.where(rng.integers(0, 2, n) == 0, 1, -1)
-    mv   = vals[miss]
-    d    = np.where(mv ==   0,  1, d)
-    d    = np.where(mv == 255, -1, d)
-    arr[indices[miss]] = np.clip(mv + d, 0, 255).astype(np.uint8)
-
-class Stego:
-    @staticmethod
-    def _scatter(seed: int, n: int) -> np.ndarray:
-        return np.random.default_rng(seed).permutation(n).astype(np.int64)
-
-    @staticmethod
-    def capacity(path: str, encrypted: bool = True) -> int:
-        try:
-            img = Image.open(path).convert('RGB')
-            N = img.size[0] * img.size[1] * 3
-            if encrypted:
-                sn = max(0, N - SALT_BITS)
-                oh = 4 + AESGCM.NONCE + AESGCM.TAG + len(DELIM)
-                return max(0, sn // 8 - oh)
-            else:
-                oh = len(PLAIN_HDR) + 4 + len(DELIM)
-                return max(0, N // 8 - oh)
-        except Exception: return 0
-
-    @staticmethod
-    def estimate_psnr(path: str, size_bytes: int) -> float:
-        try:
-            img = Image.open(path).convert('RGB')
-            N   = img.size[0] * img.size[1] * 3
-            mse = (size_bytes * 8 / N) * 0.25
-            return 10 * math.log10(255**2 / mse) if mse > 0 else float('inf')
-        except Exception: return 0.0
-
-    @staticmethod
-    def psnr(orig: str, stego: str) -> float:
-        try:
-            a = np.asarray(Image.open(orig).convert('RGB'),  dtype=np.float64)
-            b = np.asarray(Image.open(stego).convert('RGB'), dtype=np.float64)
-            mse = np.mean((a - b) ** 2)
-            return float('inf') if mse == 0 else 10 * math.log10(255**2 / mse)
-        except Exception: return 0.0
-
-    @classmethod
-    def hide(cls, img_path, plain, pw, out, cb=None):
-        try:
-            img = Image.open(img_path).convert('RGB')
-            arr = np.asarray(img, dtype=np.uint8).ravel().copy()
-            N   = len(arr)
-            if N <= SALT_BITS: return False, 'Image too small.'
-            sn = N - SALT_BITS
-            if cb: cb(0.02)
-            salt = os.urandom(KDF.SALT_LEN)
-            aes_key, seed = KDF.derive(pw, salt)
-            if cb: cb(0.25)
-            enc  = AESGCM.encrypt(plain, aes_key)
-            wire = struct.pack('>I', len(enc)) + enc + DELIM
-            wb   = np.unpackbits(np.frombuffer(wire, dtype=np.uint8))
-            nb   = len(wb)
-            if nb > sn: return False, f'Too large: needs {nb//8:,} B, holds {sn//8:,} B.'
-            if cb: cb(0.36)
-            sb = np.unpackbits(np.frombuffer(salt, dtype=np.uint8))
-            _lsb_match(arr, np.arange(SALT_BITS, dtype=np.int64), sb, int.from_bytes(os.urandom(8), 'big'))
-            if cb: cb(0.46)
-            sc = cls._scatter(seed, sn)[:nb] + SALT_BITS
-            _lsb_match(arr, sc, wb, seed ^ 0xCAFE_BABE)
-            if cb: cb(0.87)
-            Image.fromarray(arr.reshape(img.size[1], img.size[0], 3), 'RGB').save(out)
-            if cb: cb(1.0)
-            return True, f'Hidden {len(plain):,} bytes (encrypted)'
-        except MemoryError: return False, 'Insufficient memory — try a smaller image.'
-        except OSError as e: return False, f'File error: {e}'
-        except Exception as e: return False, f'Embedding failed: {e}'
-
-    @classmethod
-    def hide_plain(cls, img_path, plain, out, cb=None):
-        try:
-            img = Image.open(img_path).convert('RGB')
-            arr = np.asarray(img, dtype=np.uint8).ravel().copy()
-            N   = len(arr)
-            wire = PLAIN_HDR + struct.pack('>I', len(plain)) + plain + DELIM
-            wb   = np.unpackbits(np.frombuffer(wire, dtype=np.uint8))
-            nb   = len(wb)
-            if nb > N: return False, f'Too large: needs {nb//8:,} B, holds {N//8:,} B.'
-            if cb: cb(0.10)
-            _lsb_match(arr, np.arange(nb, dtype=np.int64), wb, int.from_bytes(os.urandom(8), 'big'))
-            if cb: cb(0.85)
-            Image.fromarray(arr.reshape(img.size[1], img.size[0], 3), 'RGB').save(out)
-            if cb: cb(1.0)
-            return True, f'Hidden {len(plain):,} bytes (plain)'
-        except Exception as e: return False, f'Embedding failed: {e}'
-
-    @classmethod
-    def extract(cls, img_path, pw=''):
-        try:
-            img = Image.open(img_path).convert('RGB')
-            arr = np.asarray(img, dtype=np.uint8).ravel()
-            N   = len(arr)
-            # Try plain
-            hb = len(PLAIN_HDR) * 8
-            if N >= hb + 32:
-                magic = bytes(np.packbits((arr[:hb] & 1).astype(np.uint8)))
-                if magic == PLAIN_HDR:
-                    try:
-                        plen = struct.unpack('>I', bytes(np.packbits((arr[hb:hb+32] & 1).astype(np.uint8))))[0]
-                    except struct.error: plen = 0
-                    if 0 < plen <= N // 8:
-                        ps = hb + 32
-                        nb = plen * 8 + len(DELIM) * 8
-                        if ps + nb <= N:
-                            pb = np.packbits((arr[ps:ps+nb] & 1).astype(np.uint8))
-                            if bytes(pb[plen:plen+len(DELIM)]) == DELIM:
-                                return True, unpack(bytes(pb[:plen]))
-
-            # Try encrypted
-            if not pw: return False, 'No password provided. If unencrypted, headers are missing or corrupted.'
-            if N <= SALT_BITS: return False, 'Image too small.'
-            sn = N - SALT_BITS
-            salt    = bytes(np.packbits((arr[:SALT_BITS] & 1).astype(np.uint8)))
-            aes_key, seed = KDF.derive(pw, salt)
-            sc      = cls._scatter(seed, sn)
-            if len(sc) < 32: return False, 'Image too small.'
-            try: enc_len = struct.unpack('>I', bytes(np.packbits((arr[sc[:32]+SALT_BITS] & 1).astype(np.uint8))))[0]
-            except struct.error: return False, 'Corrupted stego data.'
-            if enc_len == 0 or enc_len > sn // 8 or enc_len > 200_000_000: return False, 'Wrong password or empty.'
-            nb  = enc_len * 8 + len(DELIM) * 8
-            if 32 + nb > len(sc): return False, 'Corrupted data.'
-            pb   = np.packbits((arr[sc[32:32+nb]+SALT_BITS] & 1).astype(np.uint8))
-            blob = bytes(pb[:enc_len])
-            if bytes(pb[enc_len:enc_len+len(DELIM)]) != DELIM: return False, 'Wrong password or empty.'
-            try: plain = AESGCM.decrypt(blob, aes_key)
-            except ValueError: return False, 'Wrong password or GCM verification failed.'
-            return True, unpack(plain)
-        except Exception as e: return False, f'Extraction failed: {e}'
-
 # ══════════════════════════════════════════════════════════════
-# CUSTOM WINDOWS/THEMED WIDGETS
+# WIDGETS
 # ══════════════════════════════════════════════════════════════
 
 class Btn(tk.Button):
@@ -352,35 +107,41 @@ class Btn(tk.Button):
     }
     def __init__(self, parent, text, cmd, variant='primary', **kw):
         bg, hbg, pbg, fg = self._V.get(variant, self._V['primary'])()
-        super().__init__(parent, text=text, command=cmd, font=get_font('body'),
+        bd_thickness = 1 if variant == 'primary' else 0
+        super().__init__(parent, text=text, command=cmd, font=get_font('body', bold=(variant == 'primary')),
                          bg=bg, fg=fg, activebackground=hbg, activeforeground=fg,
-                         relief='flat', padx=SP[4], pady=6,
-                         cursor='hand2', highlightthickness=0, borderwidth=0, **kw)
+                         relief='flat', padx=SP[4], pady=8,
+                         cursor='hand2', highlightthickness=bd_thickness, highlightbackground=C['accent'], borderwidth=0, **kw)
         self.bind('<Enter>',           lambda _: self.config(bg=hbg))
         self.bind('<Leave>',           lambda _: self.config(bg=bg))
         self.bind('<Button-1>',        lambda _: self.config(bg=pbg))
         self.bind('<ButtonRelease-1>', lambda _: self.config(bg=hbg))
 
 class DropZone(tk.Frame):
-    _DEF = 'Drag & drop image here\\nor click  Browse'
+    _DEF_TOP = "Drag & drop image here"
+    _DEF_BTM = "or click to Browse"
     def __init__(self, parent, on_click=None, **kw):
         super().__init__(parent, bg=C['bg_input'], highlightbackground=C['border'], highlightthickness=1, relief='flat', **kw)
         self._base = C['border'];  self._hi = C['accent']
-        self._ico = tk.Label(self, text='⬆', font=get_font('display'), bg=C['bg_input'], fg=C['text_dim'])
+        self._ico = tk.Label(self, text='📄', font=get_font('display'), bg=C['bg_input'], fg=C['accent'])
         self._ico.pack(pady=(SP[3], SP[1]))
-        self._lbl = tk.Label(self, text=self._DEF, font=get_font('caption'), bg=C['bg_input'], fg=C['text_muted'], justify='center')
-        self._lbl.pack(pady=(0, SP[3]))
+        self._lbl1 = tk.Label(self, text=self._DEF_TOP, font=get_font('body'), bg=C['bg_input'], fg=C['text_muted'])
+        self._lbl1.pack()
+        self._lbl2 = tk.Label(self, text=self._DEF_BTM, font=get_font('caption', bold=True), bg=C['bg_input'], fg=C['accent'])
+        self._lbl2.pack(pady=(0, SP[3]))
         if on_click:
-            for w in (self, self._ico, self._lbl):
+            for w in (self, self._ico, self._lbl1, self._lbl2):
                 w.bind('<Button-1>', lambda _: on_click())
                 w.configure(cursor='hand2')
     def highlight(self, on): self.config(highlightbackground=self._hi if on else self._base)
     def set_file(self, name):
-        self._ico.config(text='◉', fg=C['secondary'])
-        self._lbl.config(text=f'✓  {name}', fg=C['secondary'])
+        self._ico.config(text='✓', fg=C['secondary'])
+        self._lbl1.config(text=name, fg=C['text'])
+        self._lbl2.config(text='Image Loaded Successfully', fg=C['secondary'])
     def reset(self):
-        self._ico.config(text='⬆', fg=C['text_dim'])
-        self._lbl.config(text=self._DEF, fg=C['text_muted'])
+        self._ico.config(text='📄', fg=C['accent'])
+        self._lbl1.config(text=self._DEF_TOP, fg=C['text_muted'])
+        self._lbl2.config(text=self._DEF_BTM, fg=C['accent'])
 
 class ToggleSwitch(tk.Canvas):
     W, H = 46, 24
@@ -444,10 +205,16 @@ class StegtoolApp(TkinterDnD.Tk):
         self.font_var  = tk.StringVar(value="Segoe UI")
         self.size_var  = tk.StringVar(value="Normal")
 
+        # Committed active style parameters
+        self.active_theme_name = "Obsidian (Dark)"
+        self.active_font_family = "Segoe UI"
+        self.active_font_scale = "Normal"
+
         # Persistent stego states
         self._panel     = 'hide'
         self.hide_img   = ''
         self.extr_img   = ''
+        self.analyze_img = ''
         self.hide_file  = ''
         self.mode_var   = tk.StringVar(value='text')
         self._enc_var   = tk.BooleanVar(value=True)
@@ -462,20 +229,35 @@ class StegtoolApp(TkinterDnD.Tk):
         self.dnd_bind('<<DragEnter>>', self._on_drag_enter)
         self.dnd_bind('<<DragLeave>>', self._on_drag_leave)
 
+        # Keyboard shortcuts
+        self.bind('<Control-Key-1>', lambda _: self._show_hide())
+        self.bind('<Control-Key-2>', lambda _: self._show_extr())
+        self.bind('<Control-Key-3>', lambda _: self._show_analyze())
+        self.bind('<Control-Key-4>', lambda _: self._show_customize())
+        self.bind('<Control-o>',     lambda _: self._shortcut_open())
+        self.bind('<Control-O>',     lambda _: self._shortcut_open())
+
         self._build()
         self._center()
 
     def _on_drop(self, event):
         path = self._parse_dnd(event.data)
         if not os.path.isfile(path): return
-        (self._on_hide_drop if self._panel == 'hide' else self._on_extr_drop)(path)
+        if self._panel == 'hide': self._on_hide_drop(path)
+        elif self._panel == 'extract': self._on_extr_drop(path)
+        elif self._panel == 'analyze': self._on_analyze_drop(path)
         self._drag_reset()
 
+    # FIX: Robust cross-platform drag-and-drop path parser (covers spaces/quotes/braces)
     @staticmethod
     def _parse_dnd(data):
-        raw = data.strip()
-        p   = raw[1:raw.find('}')] if raw.startswith('{') else raw.split()[0]
-        return p.replace('/', '\\')
+        raw = (data or '').strip()
+        if raw.startswith('{') and '}' in raw:
+            p = raw[1:raw.find('}')]
+        else:
+            p = raw.split()[0] if raw.split() else ''
+        p = p.strip('"').strip("'")
+        return os.path.normpath(p)
 
     def _on_drag_enter(self, _):
         if   self._panel == 'hide'    and hasattr(self, '_hdrop'): self._hdrop.highlight(True)
@@ -512,98 +294,133 @@ class StegtoolApp(TkinterDnD.Tk):
 
     def _snapshot(self):
         s = {}
-        if hasattr(self, '_hpw'):    s['h_pw']  = self._hpw.get()
-        if hasattr(self, '_hpw2'):   s['h_pw2'] = self._hpw2.get()
-        if hasattr(self, '_secret'): s['h_txt'] = self._secret.get('1.0', tk.END)
-        if hasattr(self, '_epw'):    s['e_pw']  = self._epw.get()
+        if hasattr(self, '_hpw') and self._hpw.winfo_exists():    s['h_pw']  = self._hpw.get()
+        if hasattr(self, '_hpw2') and self._hpw2.winfo_exists():   s['h_pw2'] = self._hpw2.get()
+        if hasattr(self, '_secret') and self._secret.winfo_exists(): s['h_txt'] = self._secret.get('1.0', tk.END)
+        if hasattr(self, '_epw') and self._epw.winfo_exists():    s['e_pw']  = self._epw.get()
         s['encrypt'] = self._enc_var.get()
         self._snap   = s
 
     def _restore(self):
         s = self._snap
         if 'encrypt' in s: self._enc_var.set(s['encrypt'])
-        if hasattr(self, '_hpw'):
+        if hasattr(self, '_hpw') and self._hpw.winfo_exists():
             if s.get('h_pw'):  self._hpw.insert(0, s['h_pw'])
-            if s.get('h_pw2'): self._hpw2.insert(0, s['h_pw2'])
-            if s.get('h_txt','').strip(): self._secret.insert('1.0', s['h_txt'].strip())
+            if hasattr(self, '_hpw2') and self._hpw2.winfo_exists() and s.get('h_pw2'): self._hpw2.insert(0, s['h_pw2'])
+            if hasattr(self, '_secret') and self._secret.winfo_exists() and s.get('h_txt','').strip(): self._secret.insert('1.0', s['h_txt'].strip())
             self._upd_strength()
             self._chk_match()
-        if hasattr(self, '_epw') and s.get('e_pw'): self._epw.insert(0, s['e_pw'])
+        if hasattr(self, '_epw') and self._epw.winfo_exists() and s.get('e_pw'): self._epw.insert(0, s['e_pw'])
 
         # Restore images
-        if self.hide_img and hasattr(self, '_hdrop'):
+        if self.hide_img and hasattr(self, '_hdrop') and self._hdrop.winfo_exists():
             self._hdrop.set_file(os.path.basename(self.hide_img))
-            self._load_prev(self.hide_img, self._hprev)
+            if hasattr(self, '_hprev') and self._hprev.winfo_exists():
+                self._load_prev(self.hide_img, self._hprev)
             self._upd_cap()
-            if os.path.splitext(self.hide_img)[1].lower() in ('.jpg', '.jpeg'):
+            if hasattr(self, '_jpeg_w') and self._jpeg_w.winfo_exists() and os.path.splitext(self.hide_img)[1].lower() in ('.jpg', '.jpeg'):
                 self._jpeg_w.pack(anchor='w', pady=(0, SP[1]))
-        if self.extr_img and hasattr(self, '_edrop'):
+        if self.extr_img and hasattr(self, '_edrop') and self._edrop.winfo_exists():
             self._edrop.set_file(os.path.basename(self.extr_img))
-            self._load_prev(self.extr_img, self._eprev)
-        if self.hide_file and hasattr(self, '_flbl') and os.path.exists(self.hide_file):
+            if hasattr(self, '_eprev') and self._eprev.winfo_exists():
+                self._load_prev(self.extr_img, self._eprev)
+        if self.hide_file and hasattr(self, '_flbl') and self._flbl.winfo_exists() and os.path.exists(self.hide_file):
             sz = os.path.getsize(self.hide_file)
             self._flbl.config(text=f'{os.path.basename(self.hide_file)}  ({sz:,} B)', fg=C['text'])
 
-        if hasattr(self, '_on_enc_change'): self._on_enc_change(init=True)
+        if self._panel == 'hide' and hasattr(self, '_on_enc_change'): self._on_enc_change(init=True)
 
-    # ─── Customize Modal Panel ────────────────────────────────
+    # ─── Customize Panel ──────────────────────────────────────
 
-    def _open_customize_modal(self):
-        """Creates an independent customizable modal dialog window."""
-        modal = tk.Toplevel(self)
-        modal.title("Customize Theme & Fonts")
-        modal.geometry("380x420")
-        modal.resizable(False, False)
-        modal.configure(bg=C['bg_card'])
-        modal.transient(self)
-        modal.grab_set()
+    def _show_customize(self):
+        """Displays customization settings directly inside the main workspace."""
+        self._panel = 'customize'
+        self._clr()
+        self._set_nav(self._nb_c)
 
-        # Center relative to parent
-        self.update_idletasks()
-        rx, ry = self.winfo_rootx(), self.winfo_rooty()
-        rw, rh = self.winfo_width(), self.winfo_height()
-        modal.geometry(f"+{rx + (rw-380)//2}+{ry + (rh-420)//2}")
+        # Header Frame
+        hdr = tk.Frame(self.content, bg=C['bg'])
+        hdr.pack(fill='x', pady=(0, SP[3]))
+        tk.Label(hdr, text='Customize Settings', font=get_font('display', bold=True), bg=C['bg'], fg=C['text']).pack(side='left')
 
-        pad = SP[4]
-        frame = tk.Frame(modal, bg=C['bg_card'], padx=pad, pady=pad)
-        frame.pack(fill='both', expand=True)
+        g = tk.Frame(self.content, bg=C['bg'])
+        g.pack(fill='both', expand=True)
+        g.columnconfigure(0, weight=1)
+        g.columnconfigure(1, weight=1)
+        g.rowconfigure(0, weight=1)
 
-        tk.Label(frame, text="Customize Workspace", font=get_font('title', bold=True),
-                 bg=C['bg_card'], fg=C['text']).pack(anchor='w', pady=(0, SP[4]))
+        # Immediate preview callback
+        def preview_theme():
+            pname = self.theme_var.get()
+            if pname in PALETTES:
+                C.update(PALETTES[pname])
+                self.after(10, self._rebuild_customize)
 
-        # Style themes
-        style = ttk.Style()
-        style.theme_use('default')
-        style.configure("Modal.TCombobox", 
-                         fieldbackground=C['bg_input'],
-                         background=C['bg_card'],
-                         foreground=C['text'],
-                         arrowcolor=C['text_dim'])
+        def preview_font(event=None):
+            global F_FAMILY, F_SIZE_OFFSET
+            F_FAMILY = self.font_var.get()
+            sz = self.size_var.get()
+            if sz == "Small":      F_SIZE_OFFSET = -1
+            elif sz == "Large":    F_SIZE_OFFSET = 2
+            elif sz == "Huge":     F_SIZE_OFFSET = 4
+            else:                  F_SIZE_OFFSET = 0 # Normal
+            self.after(10, self._rebuild_customize)
 
-        # Themes
-        tk.Label(frame, text="Color Palette Presets", font=get_font('label'),
-                 bg=C['bg_card'], fg=C['text_dim']).pack(anchor='w', pady=(SP[2], 2))
-        combo_theme = ttk.Combobox(frame, textvariable=self.theme_var, values=list(PALETTES.keys()), 
-                                   state="readonly", style="Modal.TCombobox")
-        combo_theme.pack(fill='x', pady=(0, SP[3]))
+        # ── Left Card (Theme Selector) ───────────────────────
+        Lc = self._card(g)
+        Lc.grid(row=0, column=0, sticky='nsew', padx=(0, SP[2]))
 
-        # Font family
-        tk.Label(frame, text="Font Family", font=get_font('label'),
-                 bg=C['bg_card'], fg=C['text_dim']).pack(anchor='w', pady=(SP[2], 2))
-        combo_font = ttk.Combobox(frame, textvariable=self.font_var, 
-                                  values=["Segoe UI", "Arial", "Consolas", "Courier New", "Verdana"], 
-                                  state="readonly", style="Modal.TCombobox")
-        combo_font.pack(fill='x', pady=(0, SP[3]))
+        self._lbl(Lc, '  Color Presets', font_key='label', fg=C['text_muted']).pack(anchor='w', pady=(0, SP[2]))
+        
+        # Modern standard radio buttons for theme selection to ensure background colors propagate
+        for key in list(PALETTES.keys()):
+            rframe = tk.Frame(Lc, bg=C['bg_card'])
+            rframe.pack(fill='x', pady=2)
+            
+            # Palette preview square
+            prev = tk.Canvas(rframe, width=32, height=16, bg=PALETTES[key]['bg'], highlightthickness=1, highlightbackground=PALETTES[key]['border'])
+            prev.pack(side='left', padx=(0, SP[2]))
+            prev.create_rectangle(2, 2, 10, 14, fill=PALETTES[key]['accent'], outline='')
+            prev.create_rectangle(12, 2, 20, 14, fill=PALETTES[key]['secondary'], outline='')
+            prev.create_rectangle(22, 2, 30, 14, fill=PALETTES[key]['bg_card'], outline='')
 
-        # Sizing scale
-        tk.Label(frame, text="Font Scale", font=get_font('label'),
-                 bg=C['bg_card'], fg=C['text_dim']).pack(anchor='w', pady=(SP[2], 2))
-        combo_size = ttk.Combobox(frame, textvariable=self.size_var, 
+            tk.Radiobutton(rframe, text=key, variable=self.theme_var, value=key,
+                           bg=C['bg_card'], fg=C['text'], selectcolor=C['bg_input'],
+                           activebackground=C['bg_hover'], activeforeground=C['text'],
+                           relief='flat', highlightthickness=0, anchor='w',
+                           command=preview_theme).pack(side='left', fill='x', expand=True)
+
+        self._sep(Lc, pady=SP[3])
+
+        # Font scale
+        self._lbl(Lc, 'Font Scale', font_key='label', fg=C['text_muted']).pack(anchor='w', pady=(SP[1], 2))
+        combo_size = ttk.Combobox(Lc, textvariable=self.size_var, 
                                   values=["Small", "Normal", "Large", "Huge"], 
-                                  state="readonly", style="Modal.TCombobox")
+                                  state="readonly")
         combo_size.pack(fill='x', pady=(0, SP[3]))
+        combo_size.bind("<<ComboboxSelected>>", preview_font)
 
-        # Action Buttons
+        # ── Right Card (Preview & Apply) ─────────────────────
+        Rc = self._card(g)
+        Rc.grid(row=0, column=1, sticky='nsew', padx=(SP[2], 0))
+
+        self._lbl(Rc, '  Preview & Typography', font_key='label', fg=C['text_muted']).pack(anchor='w', pady=(0, SP[2]))
+        
+        # Font family combobox
+        self._lbl(Rc, 'Font Family', font_key='caption', fg=C['text_muted']).pack(anchor='w', pady=(0, 2))
+        combo_font = ttk.Combobox(Rc, textvariable=self.font_var, 
+                                  values=["Segoe UI", "Arial", "Consolas", "Courier New", "Verdana"], 
+                                  state="readonly")
+        combo_font.pack(fill='x', pady=(0, SP[3]))
+        combo_font.bind("<<ComboboxSelected>>", preview_font)
+
+        # Live styling demo frame
+        demo = tk.Frame(Rc, bg=C['bg_input'], highlightbackground=C['border'], highlightthickness=1, padx=SP[3], pady=SP[3])
+        demo.pack(fill='both', expand=True, pady=(0, SP[3]))
+
+        tk.Label(demo, text="Live Preview", font=get_font('body', bold=True), bg=C['bg_input'], fg=C['accent']).pack(pady=(0, SP[1]))
+        tk.Label(demo, text="AES-256-GCM cipher active", font=get_font('tiny'), bg=C['bg_input'], fg=C['secondary']).pack(pady=(SP[1], 0))
+
         def apply_changes():
             pname = self.theme_var.get()
             if pname in PALETTES: C.update(PALETTES[pname])
@@ -615,23 +432,47 @@ class StegtoolApp(TkinterDnD.Tk):
             elif sz == "Large":    F_SIZE_OFFSET = 2
             elif sz == "Huge":     F_SIZE_OFFSET = 4
             else:                  F_SIZE_OFFSET = 0 # Normal
-            
-            self._snapshot()
-            self._build()
-            self._restore()
-            modal.destroy()
 
-        self._sep(frame, pady=SP[4])
-        
-        btn_box = tk.Frame(frame, bg=C['bg_card'])
-        btn_box.pack(fill='x', side='bottom')
-        
-        Btn(btn_box, "Apply Settings", apply_changes, 'success').pack(side='right')
-        Btn(btn_box, "Cancel", modal.destroy, 'ghost').pack(side='right', padx=(0, SP[2]))
+            self.active_theme_name = pname
+            self.active_font_family = F_FAMILY
+            self.active_font_scale = sz
+            
+            self.after(10, self._apply_and_rebuild)
+
+        # Action panel
+        bf = tk.Frame(Rc, bg=C['bg_card'])
+        bf.pack(fill='x', side='bottom')
+        Btn(bf, "Apply Workspace Styles", apply_changes, 'success').pack(fill='x')
 
     # ─── Build Sidebar and Main ──────────────────────────────
 
+    def _rebuild_customize(self):
+        self._snapshot()
+        self._build()
+        self._restore()
+        self._show_customize()
+
+    def _apply_and_rebuild(self):
+        self._snapshot()
+        self._build()
+        self._restore()
+        self._show_customize()
+        Toast(self, "Styles Applied!", kind="success")
+
     def _build(self):
+        # Configure Ttk global styles matching active dictionary C
+        style = ttk.Style()
+        style.theme_use('default')
+        style.configure('TCombobox', fieldbackground=C['bg_input'], background=C['bg_card'], foreground=C['text'], bordercolor=C['border'], lightcolor=C['border'], darkcolor=C['border'], arrowcolor=C['accent'])
+        style.map('TCombobox', fieldbackground=[('readonly', C['bg_input'])], selectbackground=[('readonly', C['accent_dk'])], selectforeground=[('readonly', C['text'])])
+        
+        self.option_add('*TCombobox*Listbox.background', C['bg_input'])
+        self.option_add('*TCombobox*Listbox.foreground', C['text'])
+        self.option_add('*TCombobox*Listbox.selectBackground', C['accent'])
+        self.option_add('*TCombobox*Listbox.selectForeground', '#070c14')
+
+        logger.info(f"Rebuilding window with theme colors: bg={C['bg']}, sidebar={C['sidebar']}, bg_card={C['bg_card']}")
+
         for w in self.winfo_children(): w.destroy()
         self.configure(bg=C['bg'])
 
@@ -645,10 +486,22 @@ class StegtoolApp(TkinterDnD.Tk):
 
         # Logo
         logo = tk.Frame(sb, bg=C['sidebar'])
-        logo.pack(fill='x', pady=(SP[6], SP[3]))
-        tk.Label(logo, text='◈', font=get_font('display'), bg=C['sidebar'], fg=C['accent']).pack()
-        tk.Label(logo, text='Stegtool', font=get_font('display', bold=True), bg=C['sidebar'], fg=C['text']).pack()
-        tk.Label(logo, text=f'v{APP_VER}', font=get_font('tiny'), bg=C['sidebar'], fg=C['accent']).pack(pady=(0, SP[4]))
+        logo.pack(fill='x', pady=(SP[5], SP[3]))
+        
+        logo_canvas = tk.Canvas(logo, width=50, height=60, bg=C['sidebar'], highlightthickness=0)
+        logo_canvas.pack(pady=(SP[2], 0))
+        # Draw a beautiful modern double shield outline in accent/cyan colors
+        logo_canvas.create_polygon(
+            [25, 5, 42, 10, 42, 35, 25, 52, 8, 35, 8, 10],
+            fill='', outline=C['accent'], width=2, smooth=True
+        )
+        logo_canvas.create_polygon(
+            [25, 12, 37, 16, 37, 33, 25, 45, 13, 33, 13, 16],
+            fill='', outline=C['accent_dk'], width=1, smooth=True
+        )
+        
+        tk.Label(logo, text='STEGTOOL', font=get_font('body', bold=True), bg=C['sidebar'], fg=C['text']).pack(pady=(SP[1], 0))
+        tk.Label(logo, text=f'v{APP_VER}', font=get_font('tiny'), bg=C['sidebar'], fg=C['text_muted']).pack(pady=(0, SP[4]))
 
         tk.Frame(sb, bg=C['border'], height=1).pack(fill='x', padx=SP[4])
 
@@ -657,55 +510,96 @@ class StegtoolApp(TkinterDnD.Tk):
         nav.pack(fill='x', padx=SP[2], pady=SP[2])
         self._nb_h = self._mknav(nav, '⬆  Hide Data',    self._show_hide)
         self._nb_e = self._mknav(nav, '⬇  Extract Data', self._show_extr)
-        self._nb_c = self._mknav(nav, '⚙  Customize',    self._open_customize_modal) # Launches Popup Window
+        self._nb_a = self._mknav(nav, '🔍  Analyze',      self._show_analyze)
+        self._nb_c = self._mknav(nav, '⚙  Customize',    self._show_customize)
         
         self._nb_h.pack(fill='x', pady=SP[1])
         self._nb_e.pack(fill='x', pady=SP[1])
+        self._nb_a.pack(fill='x', pady=SP[1])
         self._nb_c.pack(fill='x', pady=SP[1])
 
-        # Footer
-        tk.Label(sb, text='AES-256-GCM · scrypt KDF', font=get_font('tiny'), bg=C['sidebar'], fg=C['text_muted']).pack(side='bottom', pady=SP[3])
+        # Footer with shortcut hints
+        ft = tk.Frame(sb, bg=C['sidebar'])
+        ft.pack(side='bottom', fill='x', padx=SP[3], pady=SP[2])
+        tk.Label(ft, text='AES-256-GCM · scrypt KDF · zlib', font=get_font('tiny'), bg=C['sidebar'], fg=C['text_muted']).pack()
+        tk.Label(ft, text='Ctrl+1/2/3/4  Switch Panels', font=get_font('tiny'), bg=C['sidebar'], fg=C['text_dim']).pack()
+        tk.Label(ft, text='Ctrl+O  Open Image', font=get_font('tiny'), bg=C['sidebar'], fg=C['text_dim']).pack()
 
         # ── Content Panel ────────────────────────────────────
         self.content = tk.Frame(root, bg=C['bg'])
         self.content.pack(side='right', fill='both', expand=True, padx=SP[4], pady=SP[4])
-
-        self._show_hide()
+        if self._panel == 'extract':
+            self._show_extr()
+        elif self._panel == 'analyze':
+            self._show_analyze()
+        elif self._panel == 'customize':
+            self._show_customize()
+        else:
+            self._show_hide()
 
     def _mknav(self, parent, text, cmd):
-        f = tk.Frame(parent, bg=C['sidebar'])
+        f = tk.Frame(parent, bg=C['sidebar'], highlightthickness=1, highlightbackground=C['sidebar'], padx=SP[3], pady=SP[2])
         f._active = False
-        ind = tk.Frame(f, bg=C['sidebar'], width=3)
-        ind.pack(side='left', fill='y')
-        lbl = tk.Label(f, text=text, font=get_font('body'), bg=C['sidebar'], fg=C['text_muted'], padx=SP[3], pady=SP[2], cursor='hand2', anchor='w')
+        
+        lbl = tk.Label(f, text=text, font=get_font('body'), bg=C['sidebar'], fg=C['text_muted'], cursor='hand2', anchor='w')
         lbl.pack(side='left', fill='x', expand=True)
-        f._ind = ind;  f._lbl = lbl
+        
+        arr = tk.Label(f, text='', font=get_font('body'), bg=C['sidebar'], fg=C['accent'], cursor='hand2')
+        arr.pack(side='right')
+        
+        f._lbl = lbl; f._arr = arr
 
-        def click(_=None): cmd()
+        def click(_=None):
+            if cmd in (self._show_hide, self._show_extr, self._show_analyze):
+                self._revert_unapplied()
+            cmd()
         def hover(_=None):
             if not f._active:
                 f.config(bg=C['bg_hover']); lbl.config(bg=C['bg_hover'], fg=C['text'])
-                ind.config(bg=C['bg_hover'])
+                arr.config(bg=C['bg_hover'])
         def leave(_=None):
             if not f._active:
                 f.config(bg=C['sidebar']); lbl.config(bg=C['sidebar'], fg=C['text_muted'])
-                ind.config(bg=C['sidebar'])
+                arr.config(bg=C['sidebar'])
 
-        for w in (f, lbl): w.bind('<Button-1>', click); w.bind('<Enter>', hover); w.bind('<Leave>', leave)
+        for w in (f, lbl, arr): w.bind('<Button-1>', click); w.bind('<Enter>', hover); w.bind('<Leave>', leave)
         return f
 
     def _set_nav(self, active):
-        for f in (self._nb_h, self._nb_e, self._nb_c):
+        for f in (self._nb_h, self._nb_e, self._nb_a, self._nb_c):
             f._active = False
-            f.config(bg=C['sidebar']); f._lbl.config(bg=C['sidebar'], fg=C['text_muted'])
-            f._ind.config(bg=C['sidebar'])
-        # Highlight target
+            f.config(bg=C['sidebar'], highlightbackground=C['sidebar'])
+            f._lbl.config(bg=C['sidebar'], fg=C['text_muted'])
+            f._arr.config(bg=C['sidebar'], text='')
         active._active = True
-        active.config(bg=C['bg_hover']); active._lbl.config(bg=C['bg_hover'], fg=C['text'])
-        active._ind.config(bg=C['accent'])
+        active.config(bg=C['bg_hover'], highlightbackground=C['accent'])
+        active._lbl.config(bg=C['bg_hover'], fg=C['text'])
+        active._arr.config(bg=C['bg_hover'], text='›')
 
     def _clr(self):
         for w in self.content.winfo_children(): w.destroy()
+
+    def _revert_unapplied(self):
+        if (self.theme_var.get() != self.active_theme_name or
+            self.font_var.get() != self.active_font_family or
+            self.size_var.get() != self.active_font_scale):
+            
+            C.update(PALETTES[self.active_theme_name])
+            self.theme_var.set(self.active_theme_name)
+            self.font_var.set(self.active_font_family)
+            self.size_var.set(self.active_font_scale)
+            
+            global F_FAMILY, F_SIZE_OFFSET
+            F_FAMILY = self.active_font_family
+            sz = self.active_font_scale
+            if sz == "Small":      F_SIZE_OFFSET = -1
+            elif sz == "Large":    F_SIZE_OFFSET = 2
+            elif sz == "Huge":     F_SIZE_OFFSET = 4
+            else:                  F_SIZE_OFFSET = 0
+            
+            self._snapshot()
+            self._build()
+            self._restore()
 
     # ════════════════════════════════════════════════════════
     # HIDE PANEL
@@ -716,7 +610,14 @@ class StegtoolApp(TkinterDnD.Tk):
         self._clr()
         self._set_nav(self._nb_h)
 
-        tk.Label(self.content, text='Hide Data', font=get_font('display', bold=True), bg=C['bg'], fg=C['text']).pack(anchor='w', pady=(0, SP[3]))
+        # Header Frame with Badge
+        hdr = tk.Frame(self.content, bg=C['bg'])
+        hdr.pack(fill='x', pady=(0, SP[3]))
+        tk.Label(hdr, text='Hide Data', font=get_font('display', bold=True), bg=C['bg'], fg=C['text']).pack(side='left')
+        
+        badge = tk.Frame(hdr, bg=C['bg_input'], highlightbackground=C['accent'], highlightthickness=1, padx=6, pady=2)
+        badge.pack(side='left', padx=SP[3])
+        tk.Label(badge, text='⚡ LSB STEGANOGRAPHY', font=get_font('tiny', bold=True), bg=C['bg_input'], fg=C['accent']).pack()
 
         g = tk.Frame(self.content, bg=C['bg'])
         g.pack(fill='both', expand=True)
@@ -761,8 +662,13 @@ class StegtoolApp(TkinterDnD.Tk):
         self._pw_frame = tk.Frame(Lc, bg=C['bg_card'])
         self._build_pw_block(self._pw_frame)
 
-        self._plain_note = tk.Frame(Lc, bg=C['bg_card'])
-        tk.Label(self._plain_note, text='⚠  No encryption — anyone with Stegtool can extract\n    the hidden content without a password.', font=get_font('caption'), bg=C['bg_card'], fg=C['warning'], justify='left', wraplength=200).pack(anchor='w', pady=(SP[1], 0))
+        self._plain_note = tk.Frame(Lc, bg=C['bg_input'], highlightbackground=C['warning'], highlightthickness=1, padx=12, pady=10)
+        hdr_box = tk.Frame(self._plain_note, bg=C['bg_input'])
+        hdr_box.pack(fill='x', anchor='w')
+        tk.Label(hdr_box, text='⚠ UNENCRYPTED MODE', font=get_font('caption', bold=True), bg=C['bg_input'], fg=C['warning']).pack(side='left')
+        tk.Label(self._plain_note, 
+                 text='No password protection will be applied. Anyone with Stegtool or an LSB extractor can reveal this hidden content.', 
+                 font=get_font('tiny'), bg=C['bg_input'], fg=C['text_muted'], justify='left', wraplength=260).pack(anchor='w', pady=(4, 0))
 
         self._on_enc_change(init=True)
 
@@ -772,9 +678,23 @@ class StegtoolApp(TkinterDnD.Tk):
 
         mf = tk.Frame(Rc, bg=C['bg_card'])
         mf.pack(fill='x', pady=(0, SP[3]))
-        self._lbl(mf, 'Data Type:', font_key='label').pack(side='left')
-        for val, txt in [('text', '  Text'), ('file', '  File')]:
-            ttk.Radiobutton(mf, text=txt, variable=self.mode_var, value=val, command=self._toggle_mode).pack(side='left', padx=(SP[2], 0))
+        self._lbl(mf, 'Data Type:', font_key='label').pack(side='left', pady=4)
+        
+        self._mode_buttons = {}
+        def select_mode(val):
+            self.mode_var.set(val)
+            for k, btn in self._mode_buttons.items():
+                if k == val:
+                    btn.config(bg=C['bg_hover'], fg=C['accent'], highlightbackground=C['accent'], highlightthickness=1)
+                else:
+                    btn.config(bg=C['bg_card'], fg=C['text_muted'], highlightbackground=C['border'], highlightthickness=1)
+            self._toggle_mode()
+
+        for val, txt in [('text', '📄 Text'), ('file', '📁 File')]:
+            btn = tk.Button(mf, text=txt, font=get_font('body'), relief='flat', bd=0, padx=12, pady=4, cursor='hand2')
+            btn.config(command=lambda v=val: select_mode(v))
+            btn.pack(side='left', padx=(SP[2], 0))
+            self._mode_buttons[val] = btn
 
         self._mode_cont = tk.Frame(Rc, bg=C['bg_card'])
         self._mode_cont.pack(fill='both', expand=True)
@@ -795,7 +715,8 @@ class StegtoolApp(TkinterDnD.Tk):
         self._flbl.pack(side='left', fill='x', expand=True)
         Btn(fr, 'Browse…', self._browse_hide_file, 'ghost').pack(side='left', padx=(SP[1], 0))
 
-        self._toggle_mode()
+        # Initialize selected state for segmented buttons
+        select_mode(self.mode_var.get())
 
         self._sep(Rc)
         bf = tk.Frame(Rc, bg=C['bg_card'])
@@ -810,7 +731,7 @@ class StegtoolApp(TkinterDnD.Tk):
         self._hstat.pack(anchor='w', pady=(SP[1], 0))
 
     def _build_pw_block(self, parent):
-        self._lbl(parent, 'Password:', font_key='caption', fg=C['text_muted']).pack(anchor='w', pady=(SP[3], SP[1]))
+        self._lbl(parent, 'Password:', font_key='caption', fg=C['text_muted']).pack(anchor='w', pady=(SP[2], SP[1]))
         self._hpw = self._mk_entry(parent, show='*')
         self._hpw.pack(fill='x', ipady=5)
         self._hpw.bind('<KeyRelease>', lambda _: self._upd_strength())
@@ -820,13 +741,21 @@ class StegtoolApp(TkinterDnD.Tk):
         self._str_l = self._lbl(parent, '', font_key='tiny', fg=C['text_muted'])
         self._str_l.pack(anchor='e')
 
-        self._lbl(parent, 'Confirm:', font_key='caption', fg=C['text_muted']).pack(anchor='w', pady=(SP[2], SP[1]))
+        self._lbl(parent, 'Confirm:', font_key='caption', fg=C['text_muted']).pack(anchor='w', pady=(SP[1], SP[1]))
         self._hpw2 = self._mk_entry(parent, show='*')
         self._hpw2.pack(fill='x', ipady=5)
         self._hpw2.bind('<KeyRelease>', lambda _: self._chk_match())
 
         self._pmatch = self._lbl(parent, '', font_key='tiny', fg=C['text_muted'])
         self._pmatch.pack(anchor='w', pady=(2, 0))
+
+        # Keyfile 2FA Row
+        self._lbl(parent, 'Keyfile 2FA (Optional):', font_key='caption', fg=C['text_muted']).pack(anchor='w', pady=(SP[2], SP[1]))
+        kf_row = tk.Frame(parent, bg=C['bg_card'])
+        kf_row.pack(fill='x')
+        self._hkeyfile_lbl = tk.Label(kf_row, text='No keyfile selected', font=get_font('tiny'), bg=C['bg_input'], fg=C['text_muted'], anchor='w', padx=6, pady=4)
+        self._hkeyfile_lbl.pack(side='left', fill='x', expand=True)
+        Btn(kf_row, 'Keyfile…', self._browse_hide_keyfile, 'ghost').pack(side='left', padx=(4, 0))
 
     def _on_enc_change(self, init=False):
         if self._enc_var.get():
@@ -870,11 +799,12 @@ class StegtoolApp(TkinterDnD.Tk):
             elif self.hide_file and os.path.exists(self.hide_file):
                 size = os.path.getsize(self.hide_file) + 3 + len(os.path.basename(self.hide_file))
             else: return
-            ep = Stego.estimate_psnr(self.hide_img, size)
+            ep = core.Stego.estimate_psnr(self.hide_img, size)
             if ep == float('inf'): self._est_l.config(text='Est. PSNR: Perfect', fg=C['success'])
             elif ep > 40: self._est_l.config(text=f'Est. PSNR: ~{ep:.1f} dB  ✓', fg=C['secondary'])
             else: self._est_l.config(text=f'Est. PSNR: ~{ep:.1f} dB  ⚠', fg=C['warning'])
-        except Exception: pass
+        except Exception as e:
+            logger.debug(f"Failed calculating estimated PSNR: {e}")
 
     def _toggle_mode(self):
         if self.mode_var.get() == 'text':
@@ -909,17 +839,22 @@ class StegtoolApp(TkinterDnD.Tk):
             self._flbl.config(text=f'{os.path.basename(p)}  ({sz:,} B)', fg=C['text'])
             self._upd_psnr()
 
-    def _load_prev(self, path, lbl, mx=(255, 155)):
+    def _load_prev(self, path, lbl, mx=(320, 200)):
         try:
-            img = Image.open(path); img.thumbnail(mx)
-            ph  = ImageTk.PhotoImage(img)
-            lbl.config(image=ph, text=''); lbl.image = ph
-        except Exception: lbl.config(image='', text='Preview unavailable')
+            with Image.open(path) as img:
+                img = img.convert('RGB')
+                img.thumbnail(mx)
+                ph = ImageTk.PhotoImage(img)
+            lbl.config(image=ph, text='', height=ph.height())
+            lbl.image = ph
+        except Exception as e:
+            logger.error(f"Failed loading thumbnail preview for {path}: {e}")
+            lbl.config(image='', text='Preview unavailable', height=6)
 
     def _upd_cap(self):
         if not self.hide_img: return
         enc = self._enc_var.get() if hasattr(self, '_enc_var') else True
-        cap = Stego.capacity(self.hide_img, encrypted=enc)
+        cap = core.Stego.capacity(self.hide_img, encrypted=enc)
         mode = 'encrypted' if enc else 'plain'
         self._cap_l.config(text=f'Capacity ({mode}): {cap:,} bytes')
         self._cap_c.delete('all')
@@ -936,20 +871,36 @@ class StegtoolApp(TkinterDnD.Tk):
             pw2 = self._hpw2.get()
             if not pw: messagebox.showwarning('No Password', 'Please enter a password.'); return
             if pw != pw2: messagebox.showerror('Mismatch', 'Passwords do not match.'); return
+            
+            # FIX: Warn user on weak/fair passwords with confirmation prompts
+            score, label, _ = pw_strength(pw)
+            if score <= 2:
+                ans = messagebox.askyesno("Weak Password", 
+                                          f"The password you entered is '{label}'. This leaves the steganography "
+                                          "vulnerable to brute-force dictionary attacks. Proceed anyway?")
+                if not ans:
+                    return
 
         if self.mode_var.get() == 'text':
             txt = self._secret.get('1.0', tk.END).strip()
             if not txt: messagebox.showwarning('Empty', 'Please enter a secret message.'); return
-            plain = pack_text(txt)
+            plain = core.pack_text(txt)
         else:
             if not self.hide_file or not os.path.exists(self.hide_file): messagebox.showwarning('No File', 'Please select a file to hide.'); return
-            with open(self.hide_file, 'rb') as fh: plain = pack_file(self.hide_file, fh.read())
+            with open(self.hide_file, 'rb') as fh: plain = core.pack_file(self.hide_file, fh.read())
 
-        cap = Stego.capacity(self.hide_img, encrypted=encrypt)
+        cap = core.Stego.capacity(self.hide_img, encrypted=encrypt)
         if len(plain) > cap: messagebox.showerror('Too Large', f'Data is {len(plain):,} B but image holds only {cap:,} B.'); return
 
-        out = filedialog.asksaveasfilename(title='Save Stego Image', defaultextension='.png', filetypes=[('PNG','*.png'),('BMP','*.bmp')])
+        out = filedialog.asksaveasfilename(title='Save Stego Image', defaultextension='.png', filetypes=[('PNG Image','*.png'),('BMP Image','*.bmp')])
         if not out: return
+
+        # FIX: Ensure output format is lossless (PNG/BMP) to prevent JPEG destruction
+        if out.lower().endswith(('.jpg', '.jpeg')):
+            out = os.path.splitext(out)[0] + '.png'
+            messagebox.showinfo('Format Adjusted', 
+                                'JPEG format uses lossy compression which destroys hidden LSB steganography.\n\n'
+                                f'Stegtool has automatically saved your output image in PNG format:\n{out}')
 
         self._hbtn.config(state='disabled', text='Working…')
         self._going = True; self._prog = 0.0
@@ -958,8 +909,9 @@ class StegtoolApp(TkinterDnD.Tk):
 
         def work():
             def cb(v): self._prog = v
-            if encrypt: ok, msg = Stego.hide(self.hide_img, plain, pw, out, cb)
-            else: ok, msg = Stego.hide_plain(self.hide_img, plain, out, cb)
+            kf = getattr(self, '_hkeyfile_bytes', b'')
+            if encrypt: ok, msg = core.Stego.hide(self.hide_img, plain, pw, out, cb, keyfile_bytes=kf)
+            else: ok, msg = core.Stego.hide_plain(self.hide_img, plain, out, cb)
             self.after(0, lambda: self._hide_done(ok, msg, out))
         threading.Thread(target=work, daemon=True).start()
 
@@ -982,10 +934,16 @@ class StegtoolApp(TkinterDnD.Tk):
         self._hbtn.config(state='normal', text='⬆  Hide in Image')
         self._prog_c.delete('all')
         if ok:
-            p  = Stego.psnr(self.hide_img, out)
+            self._last_out = out
+            p  = core.Stego.psnr(self.hide_img, out)
             pt = f'PSNR: {p:.2f} dB' if p != float('inf') else 'PSNR: Perfect'
             self._hstat.config(text=f'{msg}  ·  {pt}', fg=C['success'])
             Toast(self, f'{msg}', kind='success')
+            # Add comparison button
+            if hasattr(self, '_cmp_btn') and self._cmp_btn.winfo_exists():
+                self._cmp_btn.destroy()
+            self._cmp_btn = Btn(self.content, '🔍 View Before/After', lambda: self._show_comparison(self.hide_img, out), 'ghost')
+            self._cmp_btn.pack(anchor='e', pady=(SP[1], 0))
         else:
             self._hstat.config(text=msg, fg=C['danger'])
             messagebox.showerror('Hide Failed', msg)
@@ -1020,7 +978,14 @@ class StegtoolApp(TkinterDnD.Tk):
         self._clr()
         self._set_nav(self._nb_e)
 
-        tk.Label(self.content, text='Extract Data', font=get_font('display', bold=True), bg=C['bg'], fg=C['text']).pack(anchor='w', pady=(0, SP[3]))
+        # Header Frame with Badge
+        hdr = tk.Frame(self.content, bg=C['bg'])
+        hdr.pack(fill='x', pady=(0, SP[3]))
+        tk.Label(hdr, text='Extract Data', font=get_font('display', bold=True), bg=C['bg'], fg=C['text']).pack(side='left')
+        
+        badge = tk.Frame(hdr, bg=C['bg_input'], highlightbackground=C['accent'], highlightthickness=1, padx=6, pady=2)
+        badge.pack(side='left', padx=SP[3])
+        tk.Label(badge, text='⚡ LSB STEGANOGRAPHY', font=get_font('tiny', bold=True), bg=C['bg_input'], fg=C['accent']).pack()
 
         g = tk.Frame(self.content, bg=C['bg'])
         g.pack(fill='both', expand=True)
@@ -1044,7 +1009,13 @@ class StegtoolApp(TkinterDnD.Tk):
         self._epw = self._mk_entry(Lc, show='*')
         self._epw.pack(fill='x', ipady=5)
 
-        self._lbl(Lc, 'Leave blank for unencrypted images', font_key='tiny', fg=C['text_muted']).pack(anchor='w', pady=(2, SP[3]))
+        # Keyfile 2FA for Extract
+        self._lbl(Lc, 'Keyfile 2FA (if used):', font_key='caption', fg=C['text_muted']).pack(anchor='w', pady=(SP[1], SP[1]))
+        ekf_row = tk.Frame(Lc, bg=C['bg_card'])
+        ekf_row.pack(fill='x', pady=(0, SP[2]))
+        self._ekeyfile_lbl = tk.Label(ekf_row, text='No keyfile selected', font=get_font('tiny'), bg=C['bg_input'], fg=C['text_muted'], anchor='w', padx=6, pady=4)
+        self._ekeyfile_lbl.pack(side='left', fill='x', expand=True)
+        Btn(ekf_row, 'Keyfile…', self._browse_extr_keyfile, 'ghost').pack(side='left', padx=(4, 0))
 
         Btn(Lc, '⬇  Reveal Hidden Data', self._do_extr, 'primary').pack(fill='x')
         self._estat = self._lbl(Lc, '', font_key='caption', fg=C['text_muted'])
@@ -1061,7 +1032,8 @@ class StegtoolApp(TkinterDnD.Tk):
         self._rtxt.config(state='disabled')
 
         self._sf = tk.Frame(Rc, bg=C['bg_card'])
-        Btn(self._sf, '⬇  Save as File', self._save_extr, 'primary').pack(side='left')
+        Btn(self._sf, '⬇ Save as File', self._save_extr, 'primary').pack(side='left', padx=(0, SP[2]))
+        Btn(self._sf, '📋 Copy & Auto-Wipe (30s)', self._copy_autowipe_clipboard, 'ghost').pack(side='left')
         self._sname = self._lbl(self._sf, '', font_key='caption', fg=C['text_muted'])
         self._sname.pack(side='left', padx=(SP[2], 0))
 
@@ -1078,10 +1050,11 @@ class StegtoolApp(TkinterDnD.Tk):
     def _do_extr(self):
         if not self.extr_img: messagebox.showwarning('No Image', 'Please select a stego image.'); return
         pw = self._epw.get()
+        kf = getattr(self, '_ekeyfile_bytes', b'')
         self._estat.config(text='Extracting…  (if encrypted, deriving keys takes ~1s)', fg=C['warning'])
         self.update()
         def work():
-            ok, res = Stego.extract(self.extr_img, pw)
+            ok, res = core.Stego.extract(self.extr_img, pw, keyfile_bytes=kf)
             self.after(0, lambda: self._extr_done(ok, res))
         threading.Thread(target=work, daemon=True).start()
 
@@ -1126,11 +1099,452 @@ class StegtoolApp(TkinterDnD.Tk):
             except OSError as e: messagebox.showerror('Save Failed', f'Could not save:\n{e}')
 
 
+    # ════════════════════════════════════════════════════════
+    # ANALYZE PANEL (Steganalysis)
+    # ════════════════════════════════════════════════════════
+
+    def _show_analyze(self):
+        self._panel = 'analyze'
+        self._clr()
+        self._set_nav(self._nb_a)
+
+        # Header
+        hdr = tk.Frame(self.content, bg=C['bg'])
+        hdr.pack(fill='x', pady=(0, SP[3]))
+        tk.Label(hdr, text='Steganalysis', font=get_font('display', bold=True), bg=C['bg'], fg=C['text']).pack(side='left')
+        badge = tk.Frame(hdr, bg=C['bg_input'], highlightbackground=C['accent'], highlightthickness=1, padx=6, pady=2)
+        badge.pack(side='left', padx=SP[3])
+        tk.Label(badge, text='⚡ CHI-SQUARE DETECTION', font=get_font('tiny', bold=True), bg=C['bg_input'], fg=C['accent']).pack()
+
+        # Export Report Buttons
+        exp_row = tk.Frame(hdr, bg=C['bg'])
+        exp_row.pack(side='right')
+        Btn(exp_row, '📄 HTML Report', self._export_html_report, 'ghost').pack(side='left', padx=(0, 6))
+        Btn(exp_row, '📕 PDF Report', self._export_pdf_report, 'primary').pack(side='left')
+
+        g = tk.Frame(self.content, bg=C['bg'])
+        g.pack(fill='both', expand=True)
+        g.columnconfigure(0, weight=1)
+        g.columnconfigure(1, weight=2)
+        g.rowconfigure(0, weight=1)
+
+        # ── Left Card: Image Input ────────────────────────
+        Lc = self._card(g)
+        Lc.grid(row=0, column=0, sticky='nsew', padx=(0, SP[2]))
+
+        self._lbl(Lc, '  Image to Analyze', font_key='label', fg=C['text_dim']).pack(anchor='w', pady=(0, SP[2]))
+        self._adrop = DropZone(Lc, on_click=self._browse_analyze_img, height=100)
+        self._adrop.pack(fill='x', pady=(0, SP[2]))
+
+        self._aprev = tk.Label(Lc, text='No image selected\n\nDrop or browse a PNG / BMP / WAV file', font=get_font('caption'), bg=C['bg_input'], fg=C['text_muted'], justify='center', height=7)
+        self._aprev.pack(fill='x')
+
+        self._sep(Lc)
+        Btn(Lc, '🔍  Run Analysis', self._do_analyze, 'primary').pack(fill='x', pady=(SP[2], 0))
+        self._astat = self._lbl(Lc, '', font_key='caption', fg=C['text_muted'])
+        self._astat.pack(anchor='w', pady=(SP[2], 0))
+
+        # ── Right Card: Results ───────────────────────────
+        Rc = self._card(g)
+        Rc.grid(row=0, column=1, sticky='nsew', padx=(SP[2], 0))
+
+        # Results header row with channel selector
+        rf_hdr = tk.Frame(Rc, bg=C['bg_card'])
+        rf_hdr.pack(fill='x', pady=(0, SP[2]))
+        self._lbl(rf_hdr, '  Analysis Results', font_key='label', fg=C['text_dim']).pack(side='left')
+
+        # Channel Filter buttons
+        self.channel_var = tk.StringVar(value='all')
+        chan_frame = tk.Frame(rf_hdr, bg=C['bg_card'])
+        chan_frame.pack(side='right')
+        self._chan_buttons = {}
+        for c_id, c_label in [('all', 'All'), ('r', 'R'), ('g', 'G'), ('b', 'B'), ('lum', 'Lum')]:
+            btn = tk.Button(chan_frame, text=c_label, font=get_font('tiny', bold=True), bg=C['bg_input'], fg=C['text_muted'], relief='flat', padx=6, pady=2,
+                            command=lambda cid=c_id: self._set_analysis_channel(cid))
+            btn.pack(side='left', padx=1)
+            self._chan_buttons[c_id] = btn
+
+        # Confidence gauge
+        self._gauge_frame = tk.Frame(Rc, bg=C['bg_card'])
+        self._gauge_frame.pack(fill='x', pady=(0, SP[3]))
+
+        self._gauge_c = tk.Canvas(self._gauge_frame, height=24, bg=C['bg_input'], highlightthickness=0)
+        self._gauge_c.pack(fill='x')
+        self._gauge_l = self._lbl(self._gauge_frame, 'Run analysis to see results', font_key='body', fg=C['text_muted'])
+        self._gauge_l.pack(anchor='w', pady=(SP[1], 0))
+
+        self._sep(Rc)
+
+        # Metrics grid
+        self._metrics_frame = tk.Frame(Rc, bg=C['bg_card'])
+        self._metrics_frame.pack(fill='x', pady=(SP[2], SP[3]))
+
+        metrics = [
+            ('Status', '--'),
+            ('Chi² Score', '--'),
+            ('P-Value', '--'),
+            ('Confidence', '--'),
+            ('LSB Ratio', '--'),
+            ('Pixel Count', '--'),
+        ]
+        self._metric_labels = {}
+        for i, (label, val) in enumerate(metrics):
+            row = tk.Frame(self._metrics_frame, bg=C['bg_card'])
+            row.pack(fill='x', pady=2)
+            self._lbl(row, label, font_key='caption', fg=C['text_muted']).pack(side='left')
+            v = self._lbl(row, val, font_key='body', fg=C['text'])
+            v.pack(side='right')
+            self._metric_labels[label] = v
+
+        self._sep(Rc)
+
+        # Verdict
+        self._verdict_l = self._lbl(Rc, '', font_key='title', fg=C['text_muted'])
+        self._verdict_l.pack(anchor='w', pady=(SP[2], 0))
+
+        # Histogram Section Header & Image Label (matches PDF/HTML report graph)
+        self._lbl(Rc, '📊 Pixel Frequency Spectrum (Logarithmic LSB Pairs)', font_key='caption', bold=True, fg=C['text_dim']).pack(anchor='w', pady=(SP[3], SP[1]))
+        self._hist_lbl = tk.Label(Rc, bg='#080e18', highlightthickness=1, highlightbackground=C['border'])
+        self._hist_lbl.pack(fill='x', pady=(0, SP[2]))
+
+        # Auto-redraw canvases on window resize
+        self._gauge_c.bind('<Configure>', lambda _: self._redraw_analysis_canvases())
+        self._hist_lbl.bind('<Configure>', lambda _: self._redraw_analysis_canvases())
+        self._last_analysis_result = None
+
+    def _set_analysis_channel(self, cid):
+        self.channel_var.set(cid)
+        for k, btn in getattr(self, '_chan_buttons', {}).items():
+            if k == cid:
+                btn.config(bg=C['accent_dk'], fg='#ffffff')
+            else:
+                btn.config(bg=C['bg_input'], fg=C['text_muted'])
+        if hasattr(self, 'analyze_img') and self.analyze_img:
+            self._do_analyze()
+
+    def _browse_analyze_img(self):
+        p = filedialog.askopenfilename(title='Select Image to Analyze', filetypes=[('Image files','*.png *.bmp *.jpg *.jpeg'), ('PNG','*.png'),('BMP','*.bmp'),('JPEG','*.jpg *.jpeg')])
+        if p: self._on_analyze_drop(p)
+
+    def _on_analyze_drop(self, path):
+        self.analyze_img = path
+        self._adrop.set_file(os.path.basename(path))
+        self._load_prev(path, self._aprev)
+
+    def _do_analyze(self):
+        if not hasattr(self, 'analyze_img') or not self.analyze_img:
+            messagebox.showwarning('No Image', 'Please select an image to analyze.')
+            return
+        chan = getattr(self, 'channel_var', tk.StringVar(value='all')).get()
+        self._astat.config(text=f'Analyzing ({chan.upper()} channel)…', fg=C['warning'])
+        self.update()
+
+        def work():
+            result = core.Stego.analyze(self.analyze_img, channel=chan)
+            self.after(0, lambda: self._analyze_done(result))
+        threading.Thread(target=work, daemon=True).start()
+
+    def _analyze_done(self, result):
+        if 'error' in result:
+            self._astat.config(text=f'Analysis failed: {result["error"]}', fg=C['danger'])
+            return
+
+        self._astat.config(text='Analysis complete', fg=C['success'])
+        self._last_analysis_result = result
+        self.update_idletasks()
+        self._redraw_analysis_canvases()
+
+    def _redraw_analysis_canvases(self):
+        result = self._last_analysis_result
+        if not result or not hasattr(self, '_gauge_c') or not self._gauge_c.winfo_exists():
+            return
+
+        conf = result['confidence']
+        status = result.get('encryption_status', '')
+
+        # Select harmonious status color based on encryption level
+        if 'Unencrypted' in status:
+            bar_color = C['warning']
+        elif 'Encrypted' in status:
+            bar_color = C['secondary']
+        elif 'Lossy' in status:
+            bar_color = C['danger']
+        elif conf > 0.4:
+            bar_color = C['accent']
+        else:
+            bar_color = C['text_muted']
+
+        # Redraw confidence gauge bar
+        self._gauge_c.delete('all')
+        self.update_idletasks()
+        w = max(200, self._gauge_c.winfo_width())
+        draw_w = max(6, int(w * max(0.02, conf)))
+        self._gauge_c.create_rectangle(0, 0, draw_w, 24, fill=bar_color, outline='')
+        self._gauge_l.config(text=f'{conf*100:.1f}% — {result["verdict"]}', fg=bar_color)
+
+        # Update metrics
+        if hasattr(self, '_metric_labels'):
+            self._metric_labels['Status'].config(text=status, fg=bar_color)
+            self._metric_labels['Chi² Score'].config(text=f'{result["chi2_score"]:,.2f}')
+            self._metric_labels['P-Value'].config(text=f'{result["p_value"]:.6f}')
+            self._metric_labels['Confidence'].config(text=f'{result["confidence"]*100:.2f}%')
+            self._metric_labels['LSB Ratio'].config(text=f'{result["lsb_ratio"]:.6f}  (ideal: 0.5000)')
+            self._metric_labels['Pixel Count'].config(text=f'{result["pixel_count"]:,}')
+
+        # Verdict label
+        if hasattr(self, '_verdict_l'):
+            self._verdict_l.config(text=result['verdict'], fg=bar_color)
+
+        # Redraw histogram using PIL rendering engine for 100% exact match with Image 2 graph
+        if hasattr(self, '_hist_lbl') and self._hist_lbl.winfo_exists():
+            self.update_idletasks()
+            hw = max(450, self._hist_lbl.winfo_width())
+            hist_img = core.render_histogram_pil(result, img_w=hw, img_h=150)
+            photo = ImageTk.PhotoImage(hist_img)
+            self._hist_lbl.config(image=photo)
+            self._hist_lbl.image = photo
+
+    # ════════════════════════════════════════════════════════
+    # BEFORE/AFTER COMPARISON POPUP
+    # ════════════════════════════════════════════════════════
+
+    def _show_comparison(self, orig_path, stego_path):
+        """Open a popup window showing original vs stego image side-by-side."""
+        win = tk.Toplevel(self)
+        win.title('Before / After Comparison')
+        win.geometry('900x520')
+        win.configure(bg=C['bg'])
+        win.transient(self)
+
+        # Header
+        tk.Label(win, text='Before / After Comparison', font=get_font('title', bold=True), bg=C['bg'], fg=C['text']).pack(pady=(SP[3], SP[2]))
+
+        # Images side by side
+        img_frame = tk.Frame(win, bg=C['bg'])
+        img_frame.pack(fill='both', expand=True, padx=SP[4])
+        img_frame.columnconfigure(0, weight=1)
+        img_frame.columnconfigure(1, weight=1)
+
+        # Original
+        orig_card = tk.Frame(img_frame, bg=C['bg_card'], padx=SP[3], pady=SP[3])
+        orig_card.grid(row=0, column=0, sticky='nsew', padx=(0, SP[2]))
+        tk.Label(orig_card, text='Original', font=get_font('label', bold=True), bg=C['bg_card'], fg=C['text']).pack(anchor='w')
+        orig_lbl = tk.Label(orig_card, bg=C['bg_input'])
+        orig_lbl.pack(fill='both', expand=True, pady=(SP[1], 0))
+
+        # Stego
+        stego_card = tk.Frame(img_frame, bg=C['bg_card'], padx=SP[3], pady=SP[3])
+        stego_card.grid(row=0, column=1, sticky='nsew', padx=(SP[2], 0))
+        tk.Label(stego_card, text='Stego Output', font=get_font('label', bold=True), bg=C['bg_card'], fg=C['text']).pack(anchor='w')
+        stego_lbl = tk.Label(stego_card, bg=C['bg_input'])
+        stego_lbl.pack(fill='both', expand=True, pady=(SP[1], 0))
+
+        # Load and display images
+        try:
+            for path, label in [(orig_path, orig_lbl), (stego_path, stego_lbl)]:
+                with Image.open(path) as img:
+                    img = img.convert('RGB')
+                    img.thumbnail((380, 350))
+                    photo = ImageTk.PhotoImage(img)
+                    label.config(image=photo)
+                    label.image = photo
+        except Exception as e:
+            logger.warning(f"Failed loading comparison images: {e}")
+
+        # Metrics bar
+        metrics = tk.Frame(win, bg=C['bg_card'], padx=SP[4], pady=SP[2])
+        metrics.pack(fill='x', padx=SP[4], pady=(SP[2], SP[3]))
+
+        try:
+            psnr_val = core.Stego.psnr(orig_path, stego_path)
+            psnr_str = f'{psnr_val:.2f} dB' if psnr_val != float('inf') else 'Perfect'
+
+            orig_size = os.path.getsize(orig_path)
+            stego_size = os.path.getsize(stego_path)
+
+            with Image.open(orig_path) as oi:
+                a = np.asarray(oi.convert('RGB'), dtype=np.int16)
+            with Image.open(stego_path) as si:
+                b = np.asarray(si.convert('RGB'), dtype=np.int16)
+            changed = int(np.sum(a != b))
+            total = a.size
+            pct = (changed / total) * 100 if total > 0 else 0
+
+            items = [
+                ('PSNR', psnr_str, C['secondary']),
+                ('Pixels Changed', f'{changed:,} / {total:,} ({pct:.2f}%)', C['accent']),
+                ('File Size', f'{orig_size:,} → {stego_size:,} bytes', C['text_muted']),
+            ]
+            for label, val, clr in items:
+                f = tk.Frame(metrics, bg=C['bg_card'])
+                f.pack(side='left', expand=True)
+                tk.Label(f, text=label, font=get_font('tiny'), bg=C['bg_card'], fg=C['text_muted']).pack()
+                tk.Label(f, text=val, font=get_font('body', bold=True), bg=C['bg_card'], fg=clr).pack()
+        except Exception as e:
+            tk.Label(metrics, text=f'Could not compute metrics: {e}', font=get_font('caption'), bg=C['bg_card'], fg=C['warning']).pack()
+
+    def _browse_hide_keyfile(self):
+        p = filedialog.askopenfilename(title='Select Keyfile (2FA)', filetypes=[('All files', '*.*')])
+        if p:
+            with open(p, 'rb') as fh: self._hkeyfile_bytes = fh.read()
+            self._hkeyfile_lbl.config(text=os.path.basename(p), fg=C['accent'])
+
+    def _browse_extr_keyfile(self):
+        p = filedialog.askopenfilename(title='Select Keyfile (2FA)', filetypes=[('All files', '*.*')])
+        if p:
+            with open(p, 'rb') as fh: self._ekeyfile_bytes = fh.read()
+            self._ekeyfile_lbl.config(text=os.path.basename(p), fg=C['accent'])
+
+    def _copy_autowipe_clipboard(self):
+        txt = self._rtxt.get('1.0', tk.END).strip()
+        if not txt or txt == 'Extracted content will appear here…':
+            messagebox.showwarning('Nothing to Copy', 'No extracted content available.')
+            return
+        self.clipboard_clear()
+        self.clipboard_append(txt)
+        messagebox.showinfo('Clipboard Copied', 'Extracted content copied to clipboard.\n\n🔒 Clipboard will be automatically cleared in 30 seconds for security.')
+
+        def autowipe():
+            import time
+            time.sleep(30)
+            try:
+                self.clipboard_clear()
+                logger.info("Clipboard auto-wiped after 30 seconds.")
+            except Exception:
+                pass
+        threading.Thread(target=autowipe, daemon=True).start()
+
+    def _set_analysis_channel(self, channel_id):
+        self.channel_var.set(channel_id)
+        if hasattr(self, 'analyze_img') and self.analyze_img:
+            self._do_analyze()
+
+    def _export_html_report(self):
+        if not hasattr(self, '_last_analysis_result') or not self._last_analysis_result:
+            messagebox.showwarning('No Analysis Data', 'Please run analysis on an image first.')
+            return
+        out = filedialog.asksaveasfilename(title='Export HTML Forensic Report', defaultextension='.html', filetypes=[('HTML Document', '*.html')])
+        if not out: return
+        try:
+            html = core.generate_html_report(self.analyze_img, self._last_analysis_result)
+            with open(out, 'w', encoding='utf-8') as fh: fh.write(html)
+            messagebox.showinfo('Report Exported', f'HTML Forensic Report exported successfully to:\n{out}')
+        except Exception as e:
+            messagebox.showerror('Export Failed', f'Could not export HTML report: {e}')
+
+    def _export_pdf_report(self):
+        if not hasattr(self, '_last_analysis_result') or not self._last_analysis_result:
+            messagebox.showwarning('No Analysis Data', 'Please run analysis on an image first.')
+            return
+        out = filedialog.asksaveasfilename(title='Export PDF Forensic Report', defaultextension='.pdf', filetypes=[('PDF Document', '*.pdf')])
+        if not out: return
+        try:
+            core.generate_pdf_report(self.analyze_img, self._last_analysis_result, out)
+            messagebox.showinfo('PDF Exported', f'📕 PDF Forensic Report exported successfully with embedded histogram graph to:\n{out}')
+        except Exception as e:
+            messagebox.showerror('Export Failed', f'Could not export PDF report: {e}')
+
+    # ════════════════════════════════════════════════════════
+    # KEYBOARD SHORTCUT HELPERS
+    # ════════════════════════════════════════════════════════
+
+    def _shortcut_open(self):
+        """Ctrl+O: open file for the current panel."""
+        if self._panel == 'hide':
+            self._browse_hide_img()
+        elif self._panel == 'extract':
+            self._browse_extr_img()
+        elif self._panel == 'analyze':
+            self._browse_analyze_img()
+
+
 # ══════════════════════════════════════════════════════════════
-# ENTRY POINT
+# ENTRY POINT — GUI or CLI
 # ══════════════════════════════════════════════════════════════
 def main():
-    StegtoolApp().mainloop()
+    import argparse, sys
+
+    parser = argparse.ArgumentParser(
+        prog='stegtool',
+        description=f'Stegtool v{APP_VER} — Advanced Steganography Suite',
+    )
+    sub = parser.add_subparsers(dest='command')
+
+    # Hide subcommand
+    h = sub.add_parser('hide', help='Hide data in an image')
+    h.add_argument('--image', '-i', required=True, help='Cover image path (PNG/BMP)')
+    h.add_argument('--output', '-o', required=True, help='Output stego image path')
+    h.add_argument('--text', '-t', help='Text to hide')
+    h.add_argument('--file', '-f', help='File to hide')
+    h.add_argument('--password', '-p', default='', help='Encryption password (omit for plaintext)')
+    h.add_argument('--no-compress', action='store_true', help='Disable zlib compression')
+
+    # Extract subcommand
+    e = sub.add_parser('extract', help='Extract hidden data from a stego image')
+    e.add_argument('--image', '-i', required=True, help='Stego image path')
+    e.add_argument('--password', '-p', default='', help='Decryption password')
+    e.add_argument('--output', '-o', help='Save extracted file to this path')
+
+    # Analyze subcommand
+    a = sub.add_parser('analyze', help='Run steganalysis on an image')
+    a.add_argument('--image', '-i', required=True, help='Image to analyze')
+
+    args = parser.parse_args()
+
+    if args.command is None:
+        # No CLI args — launch GUI
+        StegtoolApp().mainloop()
+        return
+
+    # CLI mode
+    if args.command == 'hide':
+        if not args.text and not args.file:
+            print('Error: provide --text or --file'); sys.exit(1)
+        if args.text:
+            payload = core.pack_text(args.text)
+        else:
+            with open(args.file, 'rb') as fh:
+                payload = core.pack_file(args.file, fh.read())
+
+        compress = not args.no_compress
+        if args.password:
+            ok, msg = core.Stego.hide(args.image, payload, args.password, args.output, compress=compress)
+        else:
+            ok, msg = core.Stego.hide_plain(args.image, payload, args.output, compress=compress)
+        print(msg)
+        sys.exit(0 if ok else 1)
+
+    elif args.command == 'extract':
+        ok, res = core.Stego.extract(args.image, args.password)
+        if ok:
+            mode, content = res
+            if mode == 'text':
+                print(f'[Text] {len(content):,} chars extracted')
+                if args.output:
+                    with open(args.output, 'w', encoding='utf-8') as fh: fh.write(content)
+                    print(f'Saved to {args.output}')
+                else:
+                    print(content)
+            else:
+                fname, fdata = content
+                out = args.output or fname
+                with open(out, 'wb') as fh: fh.write(fdata)
+                print(f'[File] "{fname}" extracted ({len(fdata):,} bytes) → {out}')
+        else:
+            print(f'Error: {res}')
+        sys.exit(0 if ok else 1)
+
+    elif args.command == 'analyze':
+        result = core.Stego.analyze(args.image)
+        if 'error' in result:
+            print(f'Error: {result["error"]}'); sys.exit(1)
+        print(f'Chi² Score:   {result["chi2_score"]:,.2f}')
+        print(f'P-Value:      {result["p_value"]:.6f}')
+        print(f'Confidence:   {result["confidence"]*100:.2f}%')
+        print(f'LSB Ratio:    {result["lsb_ratio"]:.6f}  (ideal: 0.5000)')
+        print(f'Pixel Count:  {result["pixel_count"]:,}')
+        print(f'Verdict:      {result["verdict"]}')
+        sys.exit(0)
 
 if __name__ == '__main__':
     main()
